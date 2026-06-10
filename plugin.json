@@ -1,9 +1,9 @@
 {
   "tesserae_compat": "1.x",
   "name": "Fal Image",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "kind": "widget",
-  "description": "Full-bleed AI-generated image widget. One image per refresh cadence using Fal.ai's image models (Flux Schnell by default, ~$0.003/image). Same prompt within a cadence bucket returns the cached image, so multi-cell page refreshes don't multiply spend. Bring your own Fal.ai API key.",
+  "description": "Full-bleed AI-generated image widget. One image per refresh cadence using Fal.ai (9 models from $0.003 to $0.15 per image). Style presets, contextual placeholders ({time_of_day}, {season}, {moon_phase}, etc.), multi-prompt rotation, e-ink-friendly suffix. Bring your own Fal.ai API key.",
   "icon": "ph-sparkle",
   "supports": {
     "sizes": ["sm", "md", "lg"]
@@ -29,11 +29,32 @@
   "cell_options": [
     {
       "name": "prompt",
-      "type": "string",
+      "type": "textarea",
       "label": "Prompt",
       "default": "a serene mountain landscape at golden hour, oil painting style",
-      "placeholder": "e.g. cyberpunk tokyo street, rainy night",
-      "help": "What to generate. Same prompt within a cadence bucket returns the cached image."
+      "placeholder": "e.g. a cyberpunk tokyo street, rainy night",
+      "help": "What to generate. Placeholders: {time_of_day}, {day_of_week}, {date}, {month}, {season}, {hour}, {year}, {moon_phase}. One prompt per line rotates by bucket (Mon = line 1, Tue = line 2, etc.)."
+    },
+    {
+      "name": "style",
+      "type": "select",
+      "label": "Style preset",
+      "default": "none",
+      "choices": [
+        { "value": "none", "label": "None (use prompt as written)" },
+        { "value": "oil_painting", "label": "Oil painting" },
+        { "value": "watercolor", "label": "Watercolour" },
+        { "value": "pencil_sketch", "label": "Pencil sketch" },
+        { "value": "pixel_art", "label": "Pixel art" },
+        { "value": "cyberpunk", "label": "Cyberpunk" },
+        { "value": "botanical", "label": "Botanical illustration" },
+        { "value": "bauhaus", "label": "Bauhaus geometric" },
+        { "value": "risograph", "label": "Risograph print" },
+        { "value": "line_art", "label": "Minimal line art" },
+        { "value": "ukiyo_e", "label": "Ukiyo-e woodblock" },
+        { "value": "art_deco", "label": "Art deco" }
+      ],
+      "help": "Prepended to the prompt before sending."
     },
     {
       "name": "model",
@@ -42,9 +63,14 @@
       "default": "fal-ai/flux/schnell",
       "choices": [
         { "value": "fal-ai/flux/schnell", "label": "Flux Schnell (~$0.003, fast)" },
-        { "value": "fal-ai/flux/dev", "label": "Flux Dev (~$0.025, best quality)" },
+        { "value": "fal-ai/hyper-sdxl", "label": "Hyper SDXL (~$0.003, 1-step)" },
         { "value": "fal-ai/fast-sdxl", "label": "Fast SDXL (~$0.01)" },
-        { "value": "fal-ai/nano-banana", "label": "Nano Banana / Gemini 2.5 Flash Image (~$0.039)" }
+        { "value": "fal-ai/flux/dev", "label": "Flux Dev (~$0.025)" },
+        { "value": "fal-ai/recraft-v3", "label": "Recraft V3 (~$0.04, crisp lines)" },
+        { "value": "fal-ai/flux-pro/v1.1", "label": "Flux Pro 1.1 (~$0.04, best Flux)" },
+        { "value": "fal-ai/nano-banana", "label": "Nano Banana / Gemini 2.5 Flash Image (~$0.039)" },
+        { "value": "fal-ai/nano-banana-2", "label": "Nano Banana 2 (~$0.08)" },
+        { "value": "fal-ai/nano-banana-pro", "label": "Nano Banana Pro (~$0.15, premium)" }
       ]
     },
     {
@@ -72,7 +98,7 @@
         { "value": "12", "label": "Every 12 hours (~$0.18/mo)" },
         { "value": "24", "label": "Daily (~$0.09/mo)" }
       ],
-      "help": "Cost figures are for Flux Schnell. Multiply ~8x for Flux Dev, ~3x for Fast SDXL, ~13x for Nano Banana."
+      "help": "Cost figures are for Flux Schnell. See README for per-model cost table."
     },
     {
       "name": "scale",
@@ -83,6 +109,21 @@
         { "value": "fit", "label": "Fit (letterbox; full image visible)" },
         { "value": "fill", "label": "Fill (crop to cover; no letterbox)" }
       ]
+    },
+    {
+      "name": "negative_prompt",
+      "type": "string",
+      "label": "Negative prompt",
+      "default": "",
+      "placeholder": "e.g. blurry, watermark, text",
+      "help": "What to avoid. Honoured by Fast SDXL, Hyper SDXL, and Recraft V3. Flux + Nano Banana ignore it (we just don't send it)."
+    },
+    {
+      "name": "eink_friendly",
+      "type": "boolean",
+      "label": "Append e-ink-friendly suffix",
+      "default": true,
+      "help": "Appends 'high contrast, limited palette, simple composition' so the image dithers cleanly."
     },
     {
       "name": "show_caption",

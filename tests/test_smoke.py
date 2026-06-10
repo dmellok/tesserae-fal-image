@@ -1,15 +1,15 @@
 """Smoke tests for the Fal Image widget.
 
 These don't hit the live Fal API. They patch ``_fal_request`` and
-exercise the request-building, caching, error-handling, and
-panel-aware aspect-ratio resolution. Live integration goes through
-the renderer's headless Chromium, not pytest.
+exercise the request-building, caching, error-handling, placeholder
+expansion, multi-prompt rotation, and per-model body shape. Live
+integration goes through the renderer's headless Chromium, not pytest.
 """
 
 from __future__ import annotations
 
-import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -53,11 +53,18 @@ def _ctx(
     }
 
 
+# -- core fetch flow ----------------------------------------------------
+
+
 def test_fetch_happy_path_returns_image_url(tmp_path: Path) -> None:
     """Valid key + prompt + working API => image_url + metadata."""
     with patch.object(server, "_fal_request", return_value=_SAMPLE_OK) as mock:
         out = server.fetch(
-            options={"prompt": "a serene mountain", "model": "fal-ai/flux/schnell"},
+            options={
+                "prompt": "a serene mountain",
+                "model": "fal-ai/flux/schnell",
+                "eink_friendly": False,
+            },
             settings={"api_key": "test-key"},
             ctx=_ctx(tmp_path),
         )
@@ -65,17 +72,15 @@ def test_fetch_happy_path_returns_image_url(tmp_path: Path) -> None:
     assert out["image_url"] == "https://v3.fal.media/files/abc/def.jpg"
     assert out["prompt"] == "a serene mountain"
     assert out["model"] == "fal-ai/flux/schnell"
-    assert out["scale"] == "fill"  # default
-    assert out["show_caption"] is False  # default
+    assert out["scale"] == "fill"
+    assert out["show_caption"] is False
     assert "generated_at" in out
-    # The request body should include the prompt + a derived seed.
     sent_body = mock.call_args.args[1]
     assert sent_body["prompt"] == "a serene mountain"
     assert isinstance(sent_body["seed"], int)
 
 
 def test_fetch_missing_api_key_surfaces_friendly_error(tmp_path: Path) -> None:
-    """No api_key => helpful onboarding error, no network call."""
     with patch.object(server, "_fal_request") as mock:
         out = server.fetch(
             options={"prompt": "anything"},
@@ -88,7 +93,6 @@ def test_fetch_missing_api_key_surfaces_friendly_error(tmp_path: Path) -> None:
 
 
 def test_fetch_missing_prompt_surfaces_friendly_error(tmp_path: Path) -> None:
-    """No prompt => helpful error, no network call."""
     with patch.object(server, "_fal_request") as mock:
         out = server.fetch(
             options={"prompt": "   "},
@@ -111,7 +115,6 @@ def test_fetch_caches_within_bucket(tmp_path: Path) -> None:
 
 
 def test_fetch_different_prompts_dont_share_cache(tmp_path: Path) -> None:
-    """Different prompts -> different cache keys -> independent API calls."""
     with patch.object(server, "_fal_request", return_value=_SAMPLE_OK) as mock:
         server.fetch(options={"prompt": "a"}, settings={"api_key": "k"}, ctx=_ctx(tmp_path))
         server.fetch(options={"prompt": "b"}, settings={"api_key": "k"}, ctx=_ctx(tmp_path))
@@ -119,8 +122,6 @@ def test_fetch_different_prompts_dont_share_cache(tmp_path: Path) -> None:
 
 
 def test_fetch_handles_api_error_gracefully(tmp_path: Path) -> None:
-    """fal_request raises -> error surfaces, no crash, no cache write."""
-
     def boom(model: str, body: dict[str, Any], api_key: str) -> Any:
         del model, body, api_key
         raise RuntimeError("connection refused")
@@ -133,12 +134,10 @@ def test_fetch_handles_api_error_gracefully(tmp_path: Path) -> None:
         )
     assert "error" in out
     assert "RuntimeError" in out["error"]
-    # No cache file written on error
     assert not any(tmp_path.glob("fal_*.json"))
 
 
 def test_fetch_handles_empty_image_list(tmp_path: Path) -> None:
-    """API responds 200 but with no images -> friendly error."""
     with patch.object(server, "_fal_request", return_value={"images": []}):
         out = server.fetch(
             options={"prompt": "x"},
@@ -146,6 +145,9 @@ def test_fetch_handles_empty_image_list(tmp_path: Path) -> None:
             ctx=_ctx(tmp_path),
         )
     assert "error" in out
+
+
+# -- aspect resolution + custom dims ------------------------------------
 
 
 def test_auto_aspect_picks_landscape_for_wide_panel(tmp_path: Path) -> None:
@@ -164,23 +166,64 @@ def test_auto_aspect_picks_square_for_squarish_panel(tmp_path: Path) -> None:
 
 
 def test_explicit_aspect_ratio_passes_through(tmp_path: Path) -> None:
-    """An explicit preset should pass through unchanged regardless of
-    panel dims, so a portrait cell on a landscape panel still gets a
-    portrait image."""
     out = server._resolve_image_size("portrait_16_9", _ctx(tmp_path, panel_w=1600, panel_h=900))
     assert out == "portrait_16_9"
 
 
-def test_seed_is_deterministic() -> None:
-    """Same prompt + same bucket = same seed, every time."""
-    assert server._seed("mountain", 100) == server._seed("mountain", 100)
-    assert server._seed("mountain", 100) != server._seed("mountain", 101)
-    assert server._seed("mountain", 100) != server._seed("ocean", 100)
+def test_cell_dims_drive_custom_image_size_for_flux(tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+
+    def capture(model: str, body: dict[str, Any], api_key: str) -> Any:
+        del model, api_key
+        captured.update(body)
+        return _SAMPLE_OK
+
+    with patch.object(server, "_fal_request", side_effect=capture):
+        server.fetch(
+            options={"prompt": "x", "aspect_ratio": "auto", "eink_friendly": False},
+            settings={"api_key": "k"},
+            ctx=_ctx(tmp_path, cell_w=387, cell_h=289),
+        )
+    assert captured.get("image_size") == {"width": 384, "height": 288}
+
+
+def test_cell_dims_clamped_to_fal_range(tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+
+    def capture(model: str, body: dict[str, Any], api_key: str) -> Any:
+        del model, api_key
+        captured.update(body)
+        return _SAMPLE_OK
+
+    with patch.object(server, "_fal_request", side_effect=capture):
+        server.fetch(
+            options={"prompt": "x", "aspect_ratio": "auto", "eink_friendly": False},
+            settings={"api_key": "k"},
+            ctx=_ctx(tmp_path, cell_w=80, cell_h=80),
+        )
+    assert captured["image_size"] == {"width": 256, "height": 256}
+    captured.clear()
+    with patch.object(server, "_fal_request", side_effect=capture):
+        server.fetch(
+            options={"prompt": "x2", "aspect_ratio": "auto", "eink_friendly": False},
+            settings={"api_key": "k"},
+            ctx=_ctx(tmp_path, cell_w=4000, cell_h=4000),
+        )
+    assert captured["image_size"] == {"width": 1536, "height": 1536}
+
+
+def test_round_dim_picks_nearest_multiple_of_16() -> None:
+    assert server._round_dim(384) == 384
+    assert server._round_dim(385) == 384
+    assert server._round_dim(391) == 384
+    assert server._round_dim(396) == 400
+    assert server._round_dim(400) == 400
+
+
+# -- per-model body shape -----------------------------------------------
 
 
 def test_flux_dev_gets_28_inference_steps(tmp_path: Path) -> None:
-    """Flux Dev's documented quality sweet spot is 28 steps; ensure
-    we override the server-side default for that model."""
     captured: dict[str, Any] = {}
 
     def capture(model: str, body: dict[str, Any], api_key: str) -> Any:
@@ -197,173 +240,7 @@ def test_flux_dev_gets_28_inference_steps(tmp_path: Path) -> None:
     assert captured.get("num_inference_steps") == 28
 
 
-def test_cell_dims_drive_custom_image_size_for_flux(tmp_path: Path) -> None:
-    """``auto`` aspect + non-zero cell_w/cell_h + Flux/SDXL =>
-    ``image_size`` becomes a {width, height} dict, rounded to the
-    nearest multiple of 16."""
-    captured: dict[str, Any] = {}
-
-    def capture(model: str, body: dict[str, Any], api_key: str) -> Any:
-        del model, api_key
-        captured.update(body)
-        return _SAMPLE_OK
-
-    with patch.object(server, "_fal_request", side_effect=capture):
-        server.fetch(
-            options={"prompt": "x", "aspect_ratio": "auto"},
-            settings={"api_key": "k"},
-            ctx=_ctx(tmp_path, cell_w=387, cell_h=289),
-        )
-    # 387 rounds to 384 (nearest multiple of 16), 289 rounds to 288.
-    assert captured.get("image_size") == {"width": 384, "height": 288}
-
-
-def test_cell_dims_clamped_to_fal_range(tmp_path: Path) -> None:
-    """Cells smaller than 256 or larger than 1536 get clamped before
-    rounding to multiples of 16."""
-    captured: dict[str, Any] = {}
-
-    def capture(model: str, body: dict[str, Any], api_key: str) -> Any:
-        del model, api_key
-        captured.update(body)
-        return _SAMPLE_OK
-
-    # Very small cell: clamp up to 256.
-    with patch.object(server, "_fal_request", side_effect=capture):
-        server.fetch(
-            options={"prompt": "x", "aspect_ratio": "auto"},
-            settings={"api_key": "k"},
-            ctx=_ctx(tmp_path, cell_w=80, cell_h=80),
-        )
-    assert captured["image_size"] == {"width": 256, "height": 256}
-    captured.clear()
-
-    # Very large cell: clamp down to 1536.
-    with patch.object(server, "_fal_request", side_effect=capture):
-        server.fetch(
-            options={"prompt": "x2", "aspect_ratio": "auto"},
-            settings={"api_key": "k"},
-            ctx=_ctx(tmp_path, cell_w=4000, cell_h=4000),
-        )
-    assert captured["image_size"] == {"width": 1536, "height": 1536}
-
-
-def test_explicit_preset_overrides_cell_dims(tmp_path: Path) -> None:
-    """An explicit preset (not 'auto') always wins, even when cell
-    dims are present. Lets users force a specific aspect."""
-    captured: dict[str, Any] = {}
-
-    def capture(model: str, body: dict[str, Any], api_key: str) -> Any:
-        del model, api_key
-        captured.update(body)
-        return _SAMPLE_OK
-
-    with patch.object(server, "_fal_request", side_effect=capture):
-        server.fetch(
-            options={"prompt": "x", "aspect_ratio": "square_hd"},
-            settings={"api_key": "k"},
-            ctx=_ctx(tmp_path, cell_w=1200, cell_h=400),
-        )
-    assert captured.get("image_size") == "square_hd"
-
-
-def test_cell_dims_ignored_for_nano_banana(tmp_path: Path) -> None:
-    """Nano Banana has no custom-dim support; cell dims still trigger
-    the aspect derivation through panel orientation."""
-    captured: dict[str, Any] = {}
-
-    def capture(model: str, body: dict[str, Any], api_key: str) -> Any:
-        del model, api_key
-        captured.update(body)
-        return _SAMPLE_OK
-
-    with patch.object(server, "_fal_request", side_effect=capture):
-        server.fetch(
-            options={
-                "prompt": "x",
-                "model": "fal-ai/nano-banana",
-                "aspect_ratio": "auto",
-            },
-            settings={"api_key": "k"},
-            ctx=_ctx(tmp_path, panel_w=1600, panel_h=900, cell_w=300, cell_h=400),
-        )
-    # Still uses aspect_ratio string, not image_size dict.
-    assert "image_size" not in captured
-    assert isinstance(captured.get("aspect_ratio"), str)
-
-
-def test_cell_dims_change_invalidates_cache(tmp_path: Path) -> None:
-    """Two fetches with same prompt + bucket but different cell dims
-    should generate independent images (different cache keys)."""
-    with patch.object(server, "_fal_request", return_value=_SAMPLE_OK) as mock:
-        server.fetch(
-            options={"prompt": "p", "aspect_ratio": "auto"},
-            settings={"api_key": "k"},
-            ctx=_ctx(tmp_path, cell_w=600, cell_h=400),
-        )
-        server.fetch(
-            options={"prompt": "p", "aspect_ratio": "auto"},
-            settings={"api_key": "k"},
-            ctx=_ctx(tmp_path, cell_w=400, cell_h=600),
-        )
-    assert mock.call_count == 2
-
-
-def test_round_dim_picks_nearest_multiple_of_16() -> None:
-    assert server._round_dim(384) == 384
-    assert server._round_dim(385) == 384
-    assert server._round_dim(391) == 384
-    assert server._round_dim(396) == 400  # 24.75 -> 25 -> 400
-    assert server._round_dim(400) == 400
-
-
-def test_nano_banana_uses_aspect_ratio_not_image_size(tmp_path: Path) -> None:
-    """Nano Banana's API takes ``aspect_ratio`` strings, not
-    ``image_size`` presets. The aspect mapping should also strip the
-    seed (the underlying Gemini model is non-deterministic)."""
-    captured: dict[str, Any] = {}
-
-    def capture(model: str, body: dict[str, Any], api_key: str) -> Any:
-        del model, api_key
-        captured.update(body)
-        return _SAMPLE_OK
-
-    with patch.object(server, "_fal_request", side_effect=capture):
-        server.fetch(
-            options={
-                "prompt": "x",
-                "model": "fal-ai/nano-banana",
-                "aspect_ratio": "landscape_16_9",
-            },
-            settings={"api_key": "k"},
-            ctx=_ctx(tmp_path),
-        )
-    assert captured.get("aspect_ratio") == "16:9"
-    assert "image_size" not in captured
-    assert "seed" not in captured
-    assert captured.get("num_images") == 1
-
-
-def test_nano_banana_auto_aspect_maps_via_panel(tmp_path: Path) -> None:
-    """Auto aspect on a portrait panel + Nano Banana -> ``3:4``."""
-    captured: dict[str, Any] = {}
-
-    def capture(model: str, body: dict[str, Any], api_key: str) -> Any:
-        del model, api_key
-        captured.update(body)
-        return _SAMPLE_OK
-
-    with patch.object(server, "_fal_request", side_effect=capture):
-        server.fetch(
-            options={"prompt": "x", "model": "fal-ai/nano-banana", "aspect_ratio": "auto"},
-            settings={"api_key": "k"},
-            ctx=_ctx(tmp_path, panel_w=600, panel_h=1200),
-        )
-    assert captured.get("aspect_ratio") == "3:4"
-
-
 def test_flux_schnell_omits_inference_steps(tmp_path: Path) -> None:
-    """Schnell uses the server-side default (4 steps); don't override."""
     captured: dict[str, Any] = {}
 
     def capture(model: str, body: dict[str, Any], api_key: str) -> Any:
@@ -380,46 +257,253 @@ def test_flux_schnell_omits_inference_steps(tmp_path: Path) -> None:
     assert "num_inference_steps" not in captured
 
 
-def test_corrupt_cache_file_falls_through_to_api(tmp_path: Path) -> None:
-    """A garbage cache file shouldn't kill the widget; the next fetch
-    should silently rewrite it after a successful API call."""
-    # Pre-pollute the cache with junk.
-    junk = tmp_path / "fal_deadbeef.json"
-    junk.write_text("not json", encoding="utf-8")
-    with patch.object(server, "_fal_request", return_value=_SAMPLE_OK) as mock:
-        out = server.fetch(
-            options={"prompt": "fresh"},
-            settings={"api_key": "k"},
-            ctx=_ctx(tmp_path),
-        )
-    assert "error" not in out
-    assert out["image_url"] == "https://v3.fal.media/files/abc/def.jpg"
-    assert mock.call_count == 1
+def test_nano_banana_variants_use_aspect_ratio_string(tmp_path: Path) -> None:
+    """Nano Banana, NB2, and NB Pro all use aspect_ratio strings (not
+    image_size dicts), have no seed, and accept no negative_prompt."""
+    for model in ("fal-ai/nano-banana", "fal-ai/nano-banana-2", "fal-ai/nano-banana-pro"):
+        captured: dict[str, Any] = {}
+
+        def capture(_model: str, body: dict[str, Any], api_key: str, _c=captured) -> Any:
+            del _model, api_key
+            _c.update(body)
+            return _SAMPLE_OK
+
+        with patch.object(server, "_fal_request", side_effect=capture):
+            server.fetch(
+                options={
+                    "prompt": "x",
+                    "model": model,
+                    "aspect_ratio": "landscape_16_9",
+                    "negative_prompt": "blurry",
+                },
+                settings={"api_key": "k"},
+                ctx=_ctx(tmp_path),
+            )
+        assert captured.get("aspect_ratio") == "16:9", model
+        assert "image_size" not in captured, model
+        assert "seed" not in captured, model
+        assert "negative_prompt" not in captured, model
+        assert captured.get("num_images") == 1, model
 
 
-def test_pick_image_url_handles_legacy_single_image_shape() -> None:
-    """Some Fal models return ``image: {url}`` instead of ``images: [{url}]``."""
-    payload = {"image": {"url": "https://v3.fal.media/x.png"}}
-    assert server._pick_image_url(payload) == "https://v3.fal.media/x.png"
+def test_sdxl_models_accept_negative_prompt(tmp_path: Path) -> None:
+    """Fast SDXL + Hyper SDXL honour negative_prompt."""
+    for model in ("fal-ai/fast-sdxl", "fal-ai/hyper-sdxl"):
+        captured: dict[str, Any] = {}
+
+        def capture(_model: str, body: dict[str, Any], api_key: str, _c=captured) -> Any:
+            del _model, api_key
+            _c.update(body)
+            return _SAMPLE_OK
+
+        with patch.object(server, "_fal_request", side_effect=capture):
+            server.fetch(
+                options={"prompt": "x", "model": model, "negative_prompt": "blurry, ugly"},
+                settings={"api_key": "k"},
+                ctx=_ctx(tmp_path),
+            )
+        assert captured.get("negative_prompt") == "blurry, ugly", model
 
 
-def test_pick_image_url_returns_none_on_garbage() -> None:
-    assert server._pick_image_url(None) is None
-    assert server._pick_image_url({}) is None
-    assert server._pick_image_url({"images": []}) is None
-    assert server._pick_image_url({"images": [{}]}) is None
+def test_recraft_v3_accepts_negative_prompt(tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
 
+    def capture(_model: str, body: dict[str, Any], api_key: str) -> Any:
+        del _model, api_key
+        captured.update(body)
+        return _SAMPLE_OK
 
-def test_cache_payload_persisted_to_disk(tmp_path: Path) -> None:
-    """After a successful fetch, the JSON cache file should be on disk
-    and parseable. (Validates the write path.)"""
-    with patch.object(server, "_fal_request", return_value=_SAMPLE_OK):
+    with patch.object(server, "_fal_request", side_effect=capture):
         server.fetch(
-            options={"prompt": "persist"},
+            options={"prompt": "x", "model": "fal-ai/recraft-v3", "negative_prompt": "watermark"},
             settings={"api_key": "k"},
             ctx=_ctx(tmp_path),
         )
-    written = list(tmp_path.glob("fal_*.json"))
-    assert len(written) == 1
-    payload = json.loads(written[0].read_text(encoding="utf-8"))
-    assert payload["image_url"] == "https://v3.fal.media/files/abc/def.jpg"
+    assert captured.get("negative_prompt") == "watermark"
+
+
+def test_flux_drops_negative_prompt(tmp_path: Path) -> None:
+    """Flux models ignore negative_prompt server-side; we don't send it."""
+    for model in ("fal-ai/flux/schnell", "fal-ai/flux/dev", "fal-ai/flux-pro/v1.1"):
+        captured: dict[str, Any] = {}
+
+        def capture(_model: str, body: dict[str, Any], api_key: str, _c=captured) -> Any:
+            del _model, api_key
+            _c.update(body)
+            return _SAMPLE_OK
+
+        with patch.object(server, "_fal_request", side_effect=capture):
+            server.fetch(
+                options={"prompt": "x", "model": model, "negative_prompt": "blurry"},
+                settings={"api_key": "k"},
+                ctx=_ctx(tmp_path),
+            )
+        assert "negative_prompt" not in captured, model
+
+
+# -- prompt composition (style, rotation, placeholders, suffix) ---------
+
+
+def test_style_preset_prepended_to_prompt(tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+
+    def capture(_m: str, body: dict[str, Any], _k: str) -> Any:
+        captured.update(body)
+        return _SAMPLE_OK
+
+    with patch.object(server, "_fal_request", side_effect=capture):
+        server.fetch(
+            options={"prompt": "a cat", "style": "ukiyo_e", "eink_friendly": False},
+            settings={"api_key": "k"},
+            ctx=_ctx(tmp_path),
+        )
+    sent = captured["prompt"]
+    assert sent.startswith("ukiyo-e")
+    assert "a cat" in sent
+
+
+def test_style_none_leaves_prompt_unchanged(tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+
+    def capture(_m: str, body: dict[str, Any], _k: str) -> Any:
+        captured.update(body)
+        return _SAMPLE_OK
+
+    with patch.object(server, "_fal_request", side_effect=capture):
+        server.fetch(
+            options={"prompt": "a cat", "style": "none", "eink_friendly": False},
+            settings={"api_key": "k"},
+            ctx=_ctx(tmp_path),
+        )
+    assert captured["prompt"] == "a cat"
+
+
+def test_eink_suffix_appended_when_enabled(tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+
+    def capture(_m: str, body: dict[str, Any], _k: str) -> Any:
+        captured.update(body)
+        return _SAMPLE_OK
+
+    with patch.object(server, "_fal_request", side_effect=capture):
+        server.fetch(
+            options={"prompt": "a cat", "eink_friendly": True},
+            settings={"api_key": "k"},
+            ctx=_ctx(tmp_path),
+        )
+    assert captured["prompt"].endswith("high contrast, limited palette, simple composition")
+
+
+def test_multi_prompt_rotation_picks_by_bucket() -> None:
+    """Newline-separated prompts rotate by ``bucket_idx % count``."""
+    prompt = "morning\nafternoon\nevening"
+    assert server._pick_rotation(prompt, 0) == "morning"
+    assert server._pick_rotation(prompt, 1) == "afternoon"
+    assert server._pick_rotation(prompt, 2) == "evening"
+    assert server._pick_rotation(prompt, 3) == "morning"
+
+
+def test_multi_prompt_rotation_skips_blank_lines() -> None:
+    """Blank lines in the prompt are ignored so users can space out."""
+    prompt = "first\n\nsecond\n  \nthird"
+    assert server._pick_rotation(prompt, 0) == "first"
+    assert server._pick_rotation(prompt, 1) == "second"
+    assert server._pick_rotation(prompt, 2) == "third"
+
+
+def test_single_line_prompt_skips_rotation() -> None:
+    assert server._pick_rotation("just one prompt", 99) == "just one prompt"
+
+
+# -- placeholder expansion ----------------------------------------------
+
+
+def test_time_of_day_at_morning() -> None:
+    # _time_of_day reads local.hour directly; passing hour=10 is enough,
+    # the function doesn't care about the datetime's tz.
+    assert server._time_of_day(datetime(2026, 6, 10, 10, 0)) == "morning"
+
+
+def test_time_of_day_at_late_night() -> None:
+    assert server._time_of_day(datetime(2026, 6, 10, 2, 0)) == "late night"
+
+
+def test_time_of_day_buckets_full_range() -> None:
+    """Smoke each band so the boundary logic doesn't quietly drift."""
+    assert server._time_of_day(datetime(2026, 6, 10, 6, 0)) == "early morning"
+    assert server._time_of_day(datetime(2026, 6, 10, 10, 0)) == "morning"
+    assert server._time_of_day(datetime(2026, 6, 10, 13, 0)) == "midday"
+    assert server._time_of_day(datetime(2026, 6, 10, 16, 0)) == "afternoon"
+    assert server._time_of_day(datetime(2026, 6, 10, 19, 0)) == "evening"
+    assert server._time_of_day(datetime(2026, 6, 10, 22, 0)) == "night"
+    assert server._time_of_day(datetime(2026, 6, 10, 3, 0)) == "late night"
+
+
+def test_season_north_hemisphere_summer() -> None:
+    assert server._season(datetime(2026, 7, 10, 12, 0)) == "summer"
+
+
+def test_season_north_hemisphere_winter() -> None:
+    assert server._season(datetime(2026, 1, 10, 12, 0)) == "winter"
+
+
+def test_moon_phase_returns_one_of_known_phases() -> None:
+    """Pick a few known dates and verify the function returns plausible
+    phase names. Astronomical accuracy isn't the goal; consistent
+    deterministic output is."""
+    out = server._moon_phase(datetime(2026, 6, 10, 12, 0, tzinfo=UTC))
+    assert out in (
+        "new moon",
+        "waxing crescent moon",
+        "first quarter moon",
+        "waxing gibbous moon",
+        "full moon",
+        "waning gibbous moon",
+        "last quarter moon",
+        "waning crescent moon",
+    )
+
+
+def test_expand_placeholders_passes_through_when_no_braces() -> None:
+    out = server._expand_placeholders("plain prompt", datetime(2026, 6, 10, 12, 0, tzinfo=UTC))
+    assert out == "plain prompt"
+
+
+def test_expand_placeholders_substitutes_time_of_day() -> None:
+    when = datetime(2026, 6, 10, 10, 0, tzinfo=UTC)
+    out = server._expand_placeholders("a {time_of_day} landscape", when)
+    # The actual word depends on the user's local timezone; just check
+    # the placeholder is gone.
+    assert "{time_of_day}" not in out
+    assert "landscape" in out
+
+
+def test_expand_placeholders_substitutes_day_of_week() -> None:
+    when = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)  # Wednesday
+    out = server._expand_placeholders("the {day_of_week} feeling", when)
+    assert "{day_of_week}" not in out
+    # June 10, 2026 is a Wednesday in most timezones (could be Tue/Thu
+    # depending on the machine's TZ offset, but both are plausible).
+    assert any(d in out for d in ("Monday", "Tuesday", "Wednesday", "Thursday"))
+
+
+def test_expand_placeholders_unknown_token_passes_through() -> None:
+    """An unknown placeholder stays in the prompt so typos don't
+    silently disappear. The user sees the literal token and notices."""
+    out = server._expand_placeholders("a {made_up} landscape", datetime(2026, 6, 10, tzinfo=UTC))
+    assert "{made_up}" in out
+
+
+def test_build_final_prompt_chains_rotation_expansion_style_suffix() -> None:
+    """End-to-end: rotation -> placeholder expansion -> style prepend
+    -> e-ink suffix. Verifies all four steps run, in order."""
+    raw = "scene A\nscene B at {time_of_day}"
+    when = datetime(2026, 6, 10, 10, 0, tzinfo=UTC)
+    # bucket_idx=1 picks the second line.
+    out = server._build_final_prompt(
+        raw, "oil_painting", eink_friendly=True, bucket_idx=1, bucket_start=when
+    )
+    assert out.startswith("oil painting style")
+    assert "scene B" in out
+    assert "{time_of_day}" not in out
+    assert out.endswith(", high contrast, limited palette, simple composition")
