@@ -1,0 +1,98 @@
+{
+  "tesserae_compat": "1.x",
+  "name": "Fal Image",
+  "version": "0.1.0",
+  "kind": "widget",
+  "description": "Full-bleed AI-generated image widget. One image per refresh cadence using Fal.ai's image models (Flux Schnell by default, ~$0.003/image). Same prompt within a cadence bucket returns the cached image, so multi-cell page refreshes don't multiply spend. Bring your own Fal.ai API key.",
+  "icon": "ph-sparkle",
+  "supports": {
+    "sizes": ["sm", "md", "lg"]
+  },
+  "design": {
+    "palette": "extended"
+  },
+  "render": {
+    "full_bleed": true,
+    "dither": "floyd-steinberg",
+    "needs_network": true
+  },
+  "settings": [
+    {
+      "name": "api_key",
+      "type": "string",
+      "label": "Fal.ai API key",
+      "secret": true,
+      "default": "",
+      "help": "Get one at https://fal.ai/dashboard/keys. Stored locally; only sent to fal.run."
+    }
+  ],
+  "cell_options": [
+    {
+      "name": "prompt",
+      "type": "string",
+      "label": "Prompt",
+      "default": "a serene mountain landscape at golden hour, oil painting style",
+      "placeholder": "e.g. cyberpunk tokyo street, rainy night",
+      "help": "What to generate. Same prompt within a cadence bucket returns the cached image."
+    },
+    {
+      "name": "model",
+      "type": "select",
+      "label": "Model",
+      "default": "fal-ai/flux/schnell",
+      "choices": [
+        { "value": "fal-ai/flux/schnell", "label": "Flux Schnell (~$0.003, fast)" },
+        { "value": "fal-ai/flux/dev", "label": "Flux Dev (~$0.025, best quality)" },
+        { "value": "fal-ai/fast-sdxl", "label": "Fast SDXL (~$0.01)" }
+      ]
+    },
+    {
+      "name": "aspect_ratio",
+      "type": "select",
+      "label": "Aspect ratio",
+      "default": "auto",
+      "choices": [
+        { "value": "auto", "label": "Auto (match panel orientation)" },
+        { "value": "square_hd", "label": "Square (1024x1024)" },
+        { "value": "landscape_4_3", "label": "Landscape 4:3" },
+        { "value": "landscape_16_9", "label": "Landscape 16:9" },
+        { "value": "portrait_4_3", "label": "Portrait 4:3" },
+        { "value": "portrait_16_9", "label": "Portrait 16:9" }
+      ]
+    },
+    {
+      "name": "refresh_hours",
+      "type": "select",
+      "label": "Refresh cadence",
+      "default": "6",
+      "choices": [
+        { "value": "1", "label": "Hourly (~$2/mo, Flux Schnell)" },
+        { "value": "6", "label": "Every 6 hours (~$0.36/mo)" },
+        { "value": "12", "label": "Every 12 hours (~$0.18/mo)" },
+        { "value": "24", "label": "Daily (~$0.09/mo)" }
+      ],
+      "help": "Cost figures are for Flux Schnell. Multiply roughly 8x for Flux Dev."
+    },
+    {
+      "name": "scale",
+      "type": "select",
+      "label": "Scale",
+      "default": "fill",
+      "choices": [
+        { "value": "fit", "label": "Fit (letterbox; full image visible)" },
+        { "value": "fill", "label": "Fill (crop to cover; no letterbox)" }
+      ]
+    },
+    {
+      "name": "show_caption",
+      "type": "boolean",
+      "label": "Show prompt overlay caption",
+      "default": false
+    }
+  ],
+  "requires": [
+    "network:fal.run",
+    "network:fal.media",
+    "network:v3.fal.media"
+  ]
+}
