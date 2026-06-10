@@ -188,6 +188,51 @@ def test_flux_dev_gets_28_inference_steps(tmp_path: Path) -> None:
     assert captured.get("num_inference_steps") == 28
 
 
+def test_nano_banana_uses_aspect_ratio_not_image_size(tmp_path: Path) -> None:
+    """Nano Banana's API takes ``aspect_ratio`` strings, not
+    ``image_size`` presets. The aspect mapping should also strip the
+    seed (the underlying Gemini model is non-deterministic)."""
+    captured: dict[str, Any] = {}
+
+    def capture(model: str, body: dict[str, Any], api_key: str) -> Any:
+        del model, api_key
+        captured.update(body)
+        return _SAMPLE_OK
+
+    with patch.object(server, "_fal_request", side_effect=capture):
+        server.fetch(
+            options={
+                "prompt": "x",
+                "model": "fal-ai/nano-banana",
+                "aspect_ratio": "landscape_16_9",
+            },
+            settings={"api_key": "k"},
+            ctx=_ctx(tmp_path),
+        )
+    assert captured.get("aspect_ratio") == "16:9"
+    assert "image_size" not in captured
+    assert "seed" not in captured
+    assert captured.get("num_images") == 1
+
+
+def test_nano_banana_auto_aspect_maps_via_panel(tmp_path: Path) -> None:
+    """Auto aspect on a portrait panel + Nano Banana -> ``3:4``."""
+    captured: dict[str, Any] = {}
+
+    def capture(model: str, body: dict[str, Any], api_key: str) -> Any:
+        del model, api_key
+        captured.update(body)
+        return _SAMPLE_OK
+
+    with patch.object(server, "_fal_request", side_effect=capture):
+        server.fetch(
+            options={"prompt": "x", "model": "fal-ai/nano-banana", "aspect_ratio": "auto"},
+            settings={"api_key": "k"},
+            ctx=_ctx(tmp_path, panel_w=600, panel_h=1200),
+        )
+    assert captured.get("aspect_ratio") == "3:4"
+
+
 def test_flux_schnell_omits_inference_steps(tmp_path: Path) -> None:
     """Schnell uses the server-side default (4 steps); don't override."""
     captured: dict[str, Any] = {}

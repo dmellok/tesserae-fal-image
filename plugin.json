@@ -1,7 +1,7 @@
 {
   "tesserae_compat": "1.x",
   "name": "Fal Image",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "kind": "widget",
   "description": "Full-bleed AI-generated image widget. One image per refresh cadence using Fal.ai's image models (Flux Schnell by default, ~$0.003/image). Same prompt within a cadence bucket returns the cached image, so multi-cell page refreshes don't multiply spend. Bring your own Fal.ai API key.",
   "icon": "ph-sparkle",
@@ -43,7 +43,8 @@
       "choices": [
         { "value": "fal-ai/flux/schnell", "label": "Flux Schnell (~$0.003, fast)" },
         { "value": "fal-ai/flux/dev", "label": "Flux Dev (~$0.025, best quality)" },
-        { "value": "fal-ai/fast-sdxl", "label": "Fast SDXL (~$0.01)" }
+        { "value": "fal-ai/fast-sdxl", "label": "Fast SDXL (~$0.01)" },
+        { "value": "fal-ai/nano-banana", "label": "Nano Banana / Gemini 2.5 Flash Image (~$0.039)" }
       ]
     },
     {
@@ -71,7 +72,7 @@
         { "value": "12", "label": "Every 12 hours (~$0.18/mo)" },
         { "value": "24", "label": "Daily (~$0.09/mo)" }
       ],
-      "help": "Cost figures are for Flux Schnell. Multiply roughly 8x for Flux Dev."
+      "help": "Cost figures are for Flux Schnell. Multiply ~8x for Flux Dev, ~3x for Fast SDXL, ~13x for Nano Banana."
     },
     {
       "name": "scale",

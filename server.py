@@ -40,6 +40,20 @@ _AUTO_BY_ASPECT = {
     "square": "square_hd",
 }
 
+# Nano Banana (Google Gemini 2.5 Flash Image) uses ratio strings rather
+# than Fal's image_size presets. Map our cell options onto its vocab so
+# the user's "Aspect ratio" choice means the same thing across models.
+_NANO_ASPECT = {
+    "square_hd": "1:1",
+    "landscape_4_3": "4:3",
+    "landscape_16_9": "16:9",
+    "portrait_4_3": "3:4",
+    "portrait_16_9": "9:16",
+}
+
+NANO_BANANA = "fal-ai/nano-banana"
+FLUX_DEV = "fal-ai/flux/dev"
+
 
 def fetch(
     options: dict[str, Any], settings: dict[str, Any], *, ctx: dict[str, Any]
@@ -84,15 +98,7 @@ def fetch(
             pass
 
     seed = _seed(prompt, bucket_idx)
-    body: dict[str, Any] = {
-        "prompt": prompt,
-        "image_size": image_size,
-        "seed": seed,
-    }
-    # Flux Dev's documented quality sweet spot. Schnell + SDXL each
-    # default to a sensible step count server-side.
-    if model == "fal-ai/flux/dev":
-        body["num_inference_steps"] = 28
+    body = _build_body(model, prompt, image_size, seed)
 
     try:
         payload = _fal_request(model, body, api_key)
@@ -114,6 +120,31 @@ def fetch(
     with contextlib.suppress(OSError):
         cache_file.write_text(json.dumps(result), encoding="utf-8")
     return {**base, **result}
+
+
+def _build_body(model: str, prompt: str, image_size: str, seed: int) -> dict[str, Any]:
+    """Build the per-model request body.
+
+    Flux + SDXL accept ``image_size`` + ``seed``. Nano Banana
+    (Gemini 2.5 Flash Image) accepts ``aspect_ratio`` instead and
+    has no seed parameter (the underlying model is non-deterministic).
+    """
+    if model == NANO_BANANA:
+        return {
+            "prompt": prompt,
+            "aspect_ratio": _NANO_ASPECT.get(image_size, "4:3"),
+            "num_images": 1,
+        }
+    body: dict[str, Any] = {
+        "prompt": prompt,
+        "image_size": image_size,
+        "seed": seed,
+    }
+    # Flux Dev's documented quality sweet spot. Schnell + SDXL each
+    # default to a sensible step count server-side.
+    if model == FLUX_DEV:
+        body["num_inference_steps"] = 28
+    return body
 
 
 def _resolve_image_size(aspect_ratio: str, ctx: dict[str, Any]) -> str:

@@ -13,7 +13,7 @@ Then in Settings, Plugins, Fal Image, paste your API key from [fal.ai/dashboard/
 ## Cell options
 
 - **Prompt** — describe what to generate.
-- **Model** — Flux Schnell (cheap + fast, ~$0.003), Flux Dev (best quality, ~$0.025), Fast SDXL (~$0.01).
+- **Model** — Flux Schnell (cheap + fast, ~$0.003), Flux Dev (best quality, ~$0.025), Fast SDXL (~$0.01), Nano Banana / Gemini 2.5 Flash Image (~$0.039).
 - **Aspect ratio** — `Auto` derives from the panel orientation, or pick explicitly (square, landscape 4:3 / 16:9, portrait 4:3 / 16:9).
 - **Refresh cadence** — hourly, every 6 / 12 hours, or daily. The same prompt within a cadence bucket returns the cached image, so a multi-cell page refresh doesn't multiply spend.
 - **Scale** — `Fit` (letterbox; full image visible) or `Fill` (crop to cover).
@@ -21,18 +21,20 @@ Then in Settings, Plugins, Fal Image, paste your API key from [fal.ai/dashboard/
 
 ## Cost model
 
-| Cadence | Images/month | Flux Schnell | Flux Dev |
-|---|---|---|---|
-| Hourly | ~720 | ~$2.16 | ~$18.00 |
-| Every 6h | ~120 | ~$0.36 | ~$3.00 |
-| Every 12h | ~60 | ~$0.18 | ~$1.50 |
-| Daily | 30 | ~$0.09 | ~$0.75 |
+| Cadence | Images/month | Flux Schnell | Fast SDXL | Flux Dev | Nano Banana |
+|---|---|---|---|---|---|
+| Hourly | ~720 | ~$2.16 | ~$7.20 | ~$18.00 | ~$28.08 |
+| Every 6h | ~120 | ~$0.36 | ~$1.20 | ~$3.00 | ~$4.68 |
+| Every 12h | ~60 | ~$0.18 | ~$0.60 | ~$1.50 | ~$2.34 |
+| Daily | 30 | ~$0.09 | ~$0.30 | ~$0.75 | ~$1.17 |
 
 Per cell. Multiple cells with different prompts cost independently. Multiple cells with the same prompt and cadence share the cache (one image, one cost).
 
 ## How caching works
 
 Within a single cadence bucket (e.g. hours 06:00 to 12:00 for a 6h cadence) every call with the same prompt, model, and image size returns the same cached image URL. When the bucket rolls over, the next render generates a fresh image. The seed is derived from `sha256(prompt + bucket_idx)` so even after a cache wipe the same prompt in the same window produces the same image.
+
+Nano Banana / Gemini 2.5 Flash Image is the exception: it has no seed parameter and is non-deterministic. Caching still works the same way (same prompt + same bucket = same cached URL), but a cache wipe in a fresh bucket will produce a different image even with an identical prompt.
 
 ## What you need
 
