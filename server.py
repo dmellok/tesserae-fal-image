@@ -54,6 +54,14 @@ _NANO_ASPECT = {
 NANO_BANANA = "fal-ai/nano-banana"
 FLUX_DEV = "fal-ai/flux/dev"
 
+# Flux + SDXL accept custom {width, height} but want them rounded to
+# a multiple of 16, and clamped at 1536 each axis. Below ~256 the
+# models produce garbage. These bounds match Fal's API and are well
+# inside the renderer's panel limits.
+_DIM_MIN = 256
+_DIM_MAX = 1536
+_DIM_STEP = 16
+
 
 def fetch(
     options: dict[str, Any], settings: dict[str, Any], *, ctx: dict[str, Any]
@@ -83,8 +91,11 @@ def fetch(
         return {**base, "error": "Add a prompt in this cell's settings."}
 
     image_size = _resolve_image_size(aspect_ratio, ctx)
+    custom_dims = _custom_dims_for(model, aspect_ratio, ctx)
     bucket_idx = int(time.time() // (refresh_hours * 3600))
-    cache_key = _cache_key(model, prompt, image_size, bucket_idx)
+    # Include custom_dims in the cache key so two cells with the same
+    # prompt but different sizes don't share an image.
+    cache_key = _cache_key(model, prompt, image_size, bucket_idx, custom_dims)
     data_dir = Path(ctx["data_dir"])
     data_dir.mkdir(parents=True, exist_ok=True)
     cache_file = data_dir / f"{cache_key}.json"
@@ -98,7 +109,7 @@ def fetch(
             pass
 
     seed = _seed(prompt, bucket_idx)
-    body = _build_body(model, prompt, image_size, seed)
+    body = _build_body(model, prompt, image_size, seed, custom_dims)
 
     try:
         payload = _fal_request(model, body, api_key)
@@ -122,12 +133,24 @@ def fetch(
     return {**base, **result}
 
 
-def _build_body(model: str, prompt: str, image_size: str, seed: int) -> dict[str, Any]:
+def _build_body(
+    model: str,
+    prompt: str,
+    image_size: str,
+    seed: int,
+    custom_dims: tuple[int, int] | None,
+) -> dict[str, Any]:
     """Build the per-model request body.
 
-    Flux + SDXL accept ``image_size`` + ``seed``. Nano Banana
-    (Gemini 2.5 Flash Image) accepts ``aspect_ratio`` instead and
-    has no seed parameter (the underlying model is non-deterministic).
+    Flux + SDXL accept either a named ``image_size`` preset or a
+    custom ``{width, height}`` dict. Nano Banana (Gemini 2.5 Flash
+    Image) accepts only ``aspect_ratio`` strings and has no seed
+    parameter (the underlying model is non-deterministic).
+
+    ``custom_dims`` (when not None) holds a rounded, clamped
+    ``(width, height)`` derived from the cell's actual pixel dims;
+    Flux + SDXL use it in place of the preset so the generated image
+    matches the cell aspect exactly.
     """
     if model == NANO_BANANA:
         return {
@@ -135,16 +158,52 @@ def _build_body(model: str, prompt: str, image_size: str, seed: int) -> dict[str
             "aspect_ratio": _NANO_ASPECT.get(image_size, "4:3"),
             "num_images": 1,
         }
-    body: dict[str, Any] = {
-        "prompt": prompt,
-        "image_size": image_size,
-        "seed": seed,
-    }
+    body: dict[str, Any] = {"prompt": prompt, "seed": seed}
+    if custom_dims is not None:
+        w, h = custom_dims
+        body["image_size"] = {"width": w, "height": h}
+    else:
+        body["image_size"] = image_size
     # Flux Dev's documented quality sweet spot. Schnell + SDXL each
     # default to a sensible step count server-side.
     if model == FLUX_DEV:
         body["num_inference_steps"] = 28
     return body
+
+
+def _custom_dims_for(model: str, aspect_ratio: str, ctx: dict[str, Any]) -> tuple[int, int] | None:
+    """Return rounded, clamped ``(w, h)`` from the cell's actual size,
+    or ``None`` if we should fall back to a named preset.
+
+    Returns ``None`` for:
+      - Nano Banana (API accepts only ratio strings, not custom dims)
+      - Cells where the user explicitly picked an aspect_ratio preset
+        (they're overriding the panel match deliberately)
+      - Hosts that don't pass cell_w/cell_h (older Tesserae releases
+        keep working unchanged)
+    """
+    if model == NANO_BANANA:
+        return None
+    # If the user picked an explicit preset, honour it; only "auto"
+    # opts into "match this cell's actual dims".
+    if aspect_ratio != "auto":
+        return None
+    try:
+        cw = int(ctx.get("cell_w") or 0)
+        ch = int(ctx.get("cell_h") or 0)
+    except (TypeError, ValueError):
+        return None
+    if cw <= 0 or ch <= 0:
+        return None
+    return _round_dim(cw), _round_dim(ch)
+
+
+def _round_dim(px: int) -> int:
+    """Round to the nearest multiple of ``_DIM_STEP`` and clamp to the
+    Fal-accepted ``[_DIM_MIN, _DIM_MAX]`` range."""
+    px = max(_DIM_MIN, min(_DIM_MAX, px))
+    # Round half-up to nearest multiple of step.
+    return round(px / _DIM_STEP) * _DIM_STEP
 
 
 def _resolve_image_size(aspect_ratio: str, ctx: dict[str, Any]) -> str:
@@ -171,8 +230,15 @@ def _resolve_image_size(aspect_ratio: str, ctx: dict[str, Any]) -> str:
     return _AUTO_BY_ASPECT["square"]
 
 
-def _cache_key(model: str, prompt: str, image_size: str, bucket_idx: int) -> str:
-    raw = f"{model}|{prompt}|{image_size}|{bucket_idx}".encode()
+def _cache_key(
+    model: str,
+    prompt: str,
+    image_size: str,
+    bucket_idx: int,
+    custom_dims: tuple[int, int] | None,
+) -> str:
+    dims = f"{custom_dims[0]}x{custom_dims[1]}" if custom_dims else "preset"
+    raw = f"{model}|{prompt}|{image_size}|{dims}|{bucket_idx}".encode()
     return "fal_" + hashlib.sha256(raw).hexdigest()[:16]
 
 

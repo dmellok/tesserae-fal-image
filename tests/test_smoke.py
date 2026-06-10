@@ -35,10 +35,19 @@ _SAMPLE_OK: dict[str, Any] = {
 }
 
 
-def _ctx(tmp_path: Path, *, panel_w: int = 1200, panel_h: int = 800) -> dict[str, Any]:
+def _ctx(
+    tmp_path: Path,
+    *,
+    panel_w: int = 1200,
+    panel_h: int = 800,
+    cell_w: int = 0,
+    cell_h: int = 0,
+) -> dict[str, Any]:
     return {
         "panel_w": panel_w,
         "panel_h": panel_h,
+        "cell_w": cell_w,
+        "cell_h": cell_h,
         "preview": False,
         "data_dir": str(tmp_path),
     }
@@ -186,6 +195,126 @@ def test_flux_dev_gets_28_inference_steps(tmp_path: Path) -> None:
             ctx=_ctx(tmp_path),
         )
     assert captured.get("num_inference_steps") == 28
+
+
+def test_cell_dims_drive_custom_image_size_for_flux(tmp_path: Path) -> None:
+    """``auto`` aspect + non-zero cell_w/cell_h + Flux/SDXL =>
+    ``image_size`` becomes a {width, height} dict, rounded to the
+    nearest multiple of 16."""
+    captured: dict[str, Any] = {}
+
+    def capture(model: str, body: dict[str, Any], api_key: str) -> Any:
+        del model, api_key
+        captured.update(body)
+        return _SAMPLE_OK
+
+    with patch.object(server, "_fal_request", side_effect=capture):
+        server.fetch(
+            options={"prompt": "x", "aspect_ratio": "auto"},
+            settings={"api_key": "k"},
+            ctx=_ctx(tmp_path, cell_w=387, cell_h=289),
+        )
+    # 387 rounds to 384 (nearest multiple of 16), 289 rounds to 288.
+    assert captured.get("image_size") == {"width": 384, "height": 288}
+
+
+def test_cell_dims_clamped_to_fal_range(tmp_path: Path) -> None:
+    """Cells smaller than 256 or larger than 1536 get clamped before
+    rounding to multiples of 16."""
+    captured: dict[str, Any] = {}
+
+    def capture(model: str, body: dict[str, Any], api_key: str) -> Any:
+        del model, api_key
+        captured.update(body)
+        return _SAMPLE_OK
+
+    # Very small cell: clamp up to 256.
+    with patch.object(server, "_fal_request", side_effect=capture):
+        server.fetch(
+            options={"prompt": "x", "aspect_ratio": "auto"},
+            settings={"api_key": "k"},
+            ctx=_ctx(tmp_path, cell_w=80, cell_h=80),
+        )
+    assert captured["image_size"] == {"width": 256, "height": 256}
+    captured.clear()
+
+    # Very large cell: clamp down to 1536.
+    with patch.object(server, "_fal_request", side_effect=capture):
+        server.fetch(
+            options={"prompt": "x2", "aspect_ratio": "auto"},
+            settings={"api_key": "k"},
+            ctx=_ctx(tmp_path, cell_w=4000, cell_h=4000),
+        )
+    assert captured["image_size"] == {"width": 1536, "height": 1536}
+
+
+def test_explicit_preset_overrides_cell_dims(tmp_path: Path) -> None:
+    """An explicit preset (not 'auto') always wins, even when cell
+    dims are present. Lets users force a specific aspect."""
+    captured: dict[str, Any] = {}
+
+    def capture(model: str, body: dict[str, Any], api_key: str) -> Any:
+        del model, api_key
+        captured.update(body)
+        return _SAMPLE_OK
+
+    with patch.object(server, "_fal_request", side_effect=capture):
+        server.fetch(
+            options={"prompt": "x", "aspect_ratio": "square_hd"},
+            settings={"api_key": "k"},
+            ctx=_ctx(tmp_path, cell_w=1200, cell_h=400),
+        )
+    assert captured.get("image_size") == "square_hd"
+
+
+def test_cell_dims_ignored_for_nano_banana(tmp_path: Path) -> None:
+    """Nano Banana has no custom-dim support; cell dims still trigger
+    the aspect derivation through panel orientation."""
+    captured: dict[str, Any] = {}
+
+    def capture(model: str, body: dict[str, Any], api_key: str) -> Any:
+        del model, api_key
+        captured.update(body)
+        return _SAMPLE_OK
+
+    with patch.object(server, "_fal_request", side_effect=capture):
+        server.fetch(
+            options={
+                "prompt": "x",
+                "model": "fal-ai/nano-banana",
+                "aspect_ratio": "auto",
+            },
+            settings={"api_key": "k"},
+            ctx=_ctx(tmp_path, panel_w=1600, panel_h=900, cell_w=300, cell_h=400),
+        )
+    # Still uses aspect_ratio string, not image_size dict.
+    assert "image_size" not in captured
+    assert isinstance(captured.get("aspect_ratio"), str)
+
+
+def test_cell_dims_change_invalidates_cache(tmp_path: Path) -> None:
+    """Two fetches with same prompt + bucket but different cell dims
+    should generate independent images (different cache keys)."""
+    with patch.object(server, "_fal_request", return_value=_SAMPLE_OK) as mock:
+        server.fetch(
+            options={"prompt": "p", "aspect_ratio": "auto"},
+            settings={"api_key": "k"},
+            ctx=_ctx(tmp_path, cell_w=600, cell_h=400),
+        )
+        server.fetch(
+            options={"prompt": "p", "aspect_ratio": "auto"},
+            settings={"api_key": "k"},
+            ctx=_ctx(tmp_path, cell_w=400, cell_h=600),
+        )
+    assert mock.call_count == 2
+
+
+def test_round_dim_picks_nearest_multiple_of_16() -> None:
+    assert server._round_dim(384) == 384
+    assert server._round_dim(385) == 384
+    assert server._round_dim(391) == 384
+    assert server._round_dim(396) == 400  # 24.75 -> 25 -> 400
+    assert server._round_dim(400) == 400
 
 
 def test_nano_banana_uses_aspect_ratio_not_image_size(tmp_path: Path) -> None:

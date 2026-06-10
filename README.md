@@ -14,7 +14,7 @@ Then in Settings, Plugins, Fal Image, paste your API key from [fal.ai/dashboard/
 
 - **Prompt** — describe what to generate.
 - **Model** — Flux Schnell (cheap + fast, ~$0.003), Flux Dev (best quality, ~$0.025), Fast SDXL (~$0.01), Nano Banana / Gemini 2.5 Flash Image (~$0.039).
-- **Aspect ratio** — `Auto` derives from the panel orientation, or pick explicitly (square, landscape 4:3 / 16:9, portrait 4:3 / 16:9).
+- **Aspect ratio** — `Auto` matches the cell's exact dimensions (rounded to a Fal-accepted size for Flux + SDXL; snapped to the nearest ratio preset for Nano Banana). Or pick explicitly (square, landscape 4:3 / 16:9, portrait 4:3 / 16:9).
 - **Refresh cadence** — hourly, every 6 / 12 hours, or daily. The same prompt within a cadence bucket returns the cached image, so a multi-cell page refresh doesn't multiply spend.
 - **Scale** — `Fit` (letterbox; full image visible) or `Fill` (crop to cover).
 - **Show caption** — small overlay showing the prompt. Off by default.
@@ -32,9 +32,13 @@ Per cell. Multiple cells with different prompts cost independently. Multiple cel
 
 ## How caching works
 
-Within a single cadence bucket (e.g. hours 06:00 to 12:00 for a 6h cadence) every call with the same prompt, model, and image size returns the same cached image URL. When the bucket rolls over, the next render generates a fresh image. The seed is derived from `sha256(prompt + bucket_idx)` so even after a cache wipe the same prompt in the same window produces the same image.
+A "bucket" is a window of time set by **Refresh cadence**. Default 6h means buckets run 00:00–06:00, 06:00–12:00, and so on.
 
-Nano Banana / Gemini 2.5 Flash Image is the exception: it has no seed parameter and is non-deterministic. Caching still works the same way (same prompt + same bucket = same cached URL), but a cache wipe in a fresh bucket will produce a different image even with an identical prompt.
+- **Within a bucket**: same prompt → same cached image URL. Multi-cell pages don't pay extra; a manual refresh doesn't pay extra.
+- **At bucket rollover**: same prompt → a **fresh, different image** with a new seed.
+- **Cache wipe within a bucket**: the seed is derived from `sha256(prompt + bucket_idx)`, so Flux + SDXL regenerate the identical image. Nano Banana is the exception (no seed param, non-deterministic) — a wipe + regen produces a different image even in the same bucket.
+
+The dimensions used to generate the image are part of the cache key, so resizing a cell mid-bucket triggers one fresh image at the new size.
 
 ## What you need
 
